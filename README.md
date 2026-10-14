@@ -43,6 +43,7 @@ pt account add "Chase Visa" --kind credit --last4 1234
 pt import-statement path/to/Chase_Activity.csv --account "Chase Visa"   # auto-detects format
 pt tx add --account "Chase Visa" --date 2026-10-05 --amount -45.10 --desc "Walgreens"
 pt tx list --unmatched          # charges not yet linked to an order
+pt reconcile                    # vendor charges -> bank lines -> order payments
 pytest
 ```
 
@@ -50,13 +51,20 @@ pytest
 
 Two routes, both idempotent (re-imports skip what is already there):
 
-**Browser extraction (richer, immediate).** Open *Your Orders* for a year in Chrome,
-paste `scripts/amazon_extract.js` into the console (or let Claude in Chrome run it). It
-fetches the printable invoice for every order on the page and returns JSON with line
-items, prices, the vendor's FSA/HSA-eligible flags and total, ship-to name, and
-payment method. Save it and run `pt import-amazon orders.json`. Per item,
-`unit_price` is the pre-tax price and `total` is the item's share of the grand total
-with tax and shipping apportioned, so items add up to what the card was charged.
+**Browser extraction (richer, immediate).** Two console scripts, run while logged in
+to Amazon in Chrome (F12 -> Console, paste, Enter). Each walks its pages, then downloads
+a JSON file that `pt import-amazon <file>` ingests:
+
+- `scripts/amazon_extract.js` on *Your Orders* (any year filter): every order's line
+  items, prices, the vendor's FSA/HSA flags and total, ship-to, payment method, and the
+  printable invoice HTML. The importer saves each invoice under
+  `<data dir>/documents/amazon/<order>.html` and sets `document_ref`, so the receipt
+  needed for an HSA claim is already on disk. Per item, `unit_price` is pre-tax and
+  `total` is the item's share of the grand total with tax and shipping apportioned.
+- `scripts/amazon_transactions.js` on *Your Payments -> Transactions*: every card
+  charge with its order number, including Amazon's per-shipment splits. Stored in
+  `vendor_charges`; `pt reconcile` (run automatically after imports) matches them to
+  statement lines by card last-4, amount, and date, and records `order_payments`.
 
 **Privacy Central CSV (bulk history).** Account -> Privacy Central -> *Request My
 Data* -> *Your Orders*; the zip contains `Retail.OrderHistory.*.csv`. Run
@@ -87,7 +95,8 @@ tests/
 
 ## Roadmap ideas
 
-- Order-to-charge reconciliation (`order_payments`), with Amazon's per-shipment splits
+- Returns and refunds (CSV returns file, invoice refund lines)
+- Item review state and the review-queue report
 - Claim package export (summary + receipts as one PDF) for HSA submission
 - More order importers (Walmart, Target, email receipts)
 - Spend reports; optional local web UI

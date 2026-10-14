@@ -23,6 +23,7 @@ parties ──< accounts ──< transactions >──┐
 | `claims` | a batch of allocations sent to one party | `draft → submitted → paid/rejected`. `paid_transaction_id` links the deposit that closed it. |
 | `transactions` | a bank/card statement line | Signed amount, negative = out. Unique on `(account_id, external_id)`. |
 | `order_payments` | "this charge paid for this order" | Many-to-many because Amazon charges per shipment. |
+| `vendor_charges` | a charge as the vendor reports it (Amazon Transactions page) | Carries `order_ref`, card last-4, pending/completed. `pt reconcile` sets `transaction_id` to the matching bank line and writes `order_payments`. |
 
 Views: `v_item_allocations` (allocated / unallocated per item), `v_claim_totals`,
 `v_unclaimed` (allocations to non-self parties not yet on a claim).

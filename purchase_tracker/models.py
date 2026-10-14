@@ -406,3 +406,65 @@ def list_transactions(conn: sqlite3.Connection, account: str | None = None,
     sql += " ORDER BY t.posted_date DESC, t.id DESC LIMIT ?"
     args.append(limit)
     return conn.execute(sql, args).fetchall()
+
+
+# --- reconciliation: vendor charges <-> bank transactions <-> orders ------------
+
+@dataclass
+class ReconcileResult:
+    linked_transactions: int = 0   # vendor charge matched to a bank line
+    linked_orders: int = 0         # order_payments rows created
+    unmatched_charges: int = 0     # completed charges with no bank line yet
+    charges_without_order: int = 0 # charges whose order has not been imported
+
+
+def reconcile(conn: sqlite3.Connection, window_days: int = 6) -> ReconcileResult:
+    """Match completed vendor charges to bank transactions and record order payments.
+
+    A bank line matches a charge when the account's last4 equals the charge's last4, the
+    amounts are equal, the posting date is within ``window_days`` after (or 1 day before)
+    the charge date, and the line is not already claimed by another charge. Nearest date wins.
+    """
+    res = ReconcileResult()
+    charges = conn.execute(
+        "SELECT * FROM vendor_charges WHERE status = 'completed' ORDER BY charge_date, id"
+    ).fetchall()
+    for ch in charges:
+        tx_id = ch["transaction_id"]
+        if tx_id is None and ch["last4"]:
+            row = conn.execute(
+                "SELECT t.id FROM transactions t JOIN accounts a ON a.id = t.account_id"
+                " WHERE a.last4 = ? AND ABS(t.amount - ?) < 0.005"
+                "   AND t.posted_date BETWEEN date(?, '-1 day') AND date(?, ?)"
+                "   AND t.id NOT IN (SELECT transaction_id FROM vendor_charges WHERE transaction_id IS NOT NULL)"
+                " ORDER BY ABS(julianday(t.posted_date) - julianday(?)) LIMIT 1",
+                (ch["last4"], ch["amount"], ch["charge_date"], ch["charge_date"],
+                 f"+{window_days} days", ch["charge_date"]),
+            ).fetchone()
+            if row:
+                tx_id = row["id"]
+                conn.execute("UPDATE vendor_charges SET transaction_id = ? WHERE id = ?", (tx_id, ch["id"]))
+                res.linked_transactions += 1
+        if tx_id is None:
+            res.unmatched_charges += 1
+            continue
+        order = conn.execute("SELECT id FROM orders WHERE vendor = ? AND order_ref = ?",
+                             (ch["vendor"], ch["order_ref"])).fetchone()
+        if order is None:
+            res.charges_without_order += 1
+            continue
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO order_payments (order_id, transaction_id, amount) VALUES (?,?,?)",
+            (order["id"], tx_id, abs(ch["amount"])),
+        )
+        res.linked_orders += cur.rowcount
+    return res
+
+
+def charges_for_order(conn: sqlite3.Connection, order_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT vc.*, t.posted_date AS bank_date, a.name AS account"
+        " FROM vendor_charges vc JOIN orders o ON o.vendor = vc.vendor AND o.order_ref = vc.order_ref"
+        " LEFT JOIN transactions t ON t.id = vc.transaction_id LEFT JOIN accounts a ON a.id = t.account_id"
+        " WHERE o.id = ? ORDER BY vc.charge_date, vc.id", (order_id,)
+    ).fetchall()

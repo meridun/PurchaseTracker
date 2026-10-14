@@ -216,10 +216,33 @@ ALTER TABLE orders ADD COLUMN hsa_eligible_total REAL;   -- vendor-stated FSA/HS
 ALTER TABLE items  ADD COLUMN hsa_eligible       INTEGER; -- 1/0 from the vendor, NULL = unknown
 """
 
+# ---------------------------------------------------------------------------
+# v4: vendor-side charges (Amazon's "Transactions" page) bridging orders to bank lines
+# ---------------------------------------------------------------------------
+_V4 = f"""
+CREATE TABLE vendor_charges (
+    id             INTEGER PRIMARY KEY,
+    vendor         TEXT NOT NULL,
+    order_ref      TEXT NOT NULL,
+    charge_date    TEXT NOT NULL,
+    amount         REAL NOT NULL,                 -- negative = charge, positive = refund
+    instrument     TEXT,                          -- 'Discover ****1234'
+    last4          TEXT,
+    merchant       TEXT,                          -- 'AMZN Mktp US', 'Amazon.com', 'Amazon Tips'
+    status         TEXT NOT NULL DEFAULT 'completed' CHECK (status IN ('pending','completed')),
+    external_id    TEXT NOT NULL UNIQUE,
+    transaction_id INTEGER REFERENCES transactions(id),  -- matching bank line, once reconciled
+    created_at     TEXT NOT NULL DEFAULT {TS_DEFAULT}
+);
+CREATE INDEX ix_vendor_charges_order ON vendor_charges (vendor, order_ref);
+CREATE INDEX ix_vendor_charges_tx    ON vendor_charges (transaction_id);
+"""
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     lambda c: c.executescript(_V1),  # 1
     _v2,                              # 2
     lambda c: c.executescript(_V3),  # 3
+    lambda c: c.executescript(_V4),  # 4
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 

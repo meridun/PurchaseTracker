@@ -12,7 +12,7 @@ from .models import (
     Account, Item, Order, add_transaction, allocate, claim_add_allocations, claim_allocations,
     claim_remove_allocations, create_claim, delete_allocation, get_account, get_party,
     items_for_order, list_accounts, list_claims, list_orders, list_parties, list_transactions,
-    pay_claim, reject_claim, reopen_claim, submit_claim, unclaimed,
+    pay_claim, reconcile, reject_claim, reopen_claim, submit_claim, unclaimed, charges_for_order,
 )
 
 
@@ -87,6 +87,12 @@ def cmd_show(args):
              f"HSA-eligible: {_money(o['hsa_eligible_total'])}" if o["hsa_eligible_total"] else ""]
     if any(extra):
         print("  " + "   ".join(e for e in extra if e))
+    if o["document_ref"]:
+        print(f"  receipt: {o['document_ref']}")
+    for c in charges_for_order(conn, o["id"]):
+        bank = f"matched {c['account']} {c['bank_date']}" if c["transaction_id"] else "no bank line"
+        print(f"  charge {c['charge_date']} {c['amount']:>8.2f}  {c['instrument'] or ''}  {c['merchant'] or ''}"
+              f"  [{c['status']}, {bank}]")
     print(f"{'item':>5}  {'qty':>3}  {'total':>9}  {'alloc':>9}  {'unalloc':>9}  {'hsa':3}  name")
     for i in items_for_order(conn, o["id"]):
         hsa = {1: "yes", 0: "no"}.get(i["hsa_eligible"], "")
@@ -291,13 +297,29 @@ def cmd_import_statement(args):
 
 
 def cmd_import_amazon(args):
-    from .importers.amazon import import_csv, import_json
+    from .importers.amazon import import_file
 
+    data_dir, conn = _open(args)
+    try:
+        r = import_file(conn, Path(args.file), docs_dir=data_dir / "documents")
+    except ValueError as e:
+        sys.exit(f"error: {e}")
+    print(r.summary())
+    if r.kind == "transactions" or r.orders_new:
+        rr = reconcile(conn)
+        conn.commit()
+        print(f"reconcile: {rr.linked_transactions} charges matched to bank lines, "
+              f"{rr.linked_orders} order payments recorded, {rr.unmatched_charges} charges without a bank line, "
+              f"{rr.charges_without_order} charges for orders not yet imported")
+
+
+def cmd_reconcile(args):
     _, conn = _open(args)
-    path = Path(args.file)
-    r = (import_json if path.suffix.lower() == ".json" else import_csv)(conn, path)
-    print(f"orders: {r.orders_new} new, {r.orders_seen} already present; "
-          f"items: {r.items_new} new, {r.items_skipped} already present")
+    rr = reconcile(conn, args.window)
+    conn.commit()
+    print(f"{rr.linked_transactions} charges matched to bank lines, {rr.linked_orders} order payments recorded")
+    print(f"{rr.unmatched_charges} completed charges without a bank line, "
+          f"{rr.charges_without_order} charges for orders not yet imported")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -433,9 +455,15 @@ def build_parser() -> argparse.ArgumentParser:
     st.set_defaults(fn=cmd_import_statement)
 
     i = sub.add_parser("import-amazon",
-                       help="import Amazon orders: .csv (Privacy Central export) or .json (scripts/amazon_extract.js)")
+                       help="import Amazon data: Privacy Central .csv, or .json from scripts/amazon_extract.js"
+                            " (orders + invoices) or scripts/amazon_transactions.js (card charges)")
     i.add_argument("file")
     i.set_defaults(fn=cmd_import_amazon)
+
+    rc = sub.add_parser("reconcile", help="match vendor charges to bank lines and record order payments")
+    rc.add_argument("--window", type=int, default=6, help="days after the charge a bank line may post")
+    rc.set_defaults(fn=cmd_reconcile)
+
     return ap
 
 

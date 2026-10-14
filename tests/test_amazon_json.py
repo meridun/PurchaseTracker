@@ -31,8 +31,9 @@ SAMPLE = [
 ]
 
 
-def test_schema_is_v3(conn):
-    assert schema_version(conn) == SCHEMA_VERSION == 3
+def test_v3_columns_present(conn):
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(orders)")}
+    assert {"ship_to", "payment_method", "tax", "hsa_eligible_total"} <= cols
 
 
 def test_apportion_sums_exactly():
