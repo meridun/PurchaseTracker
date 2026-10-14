@@ -64,10 +64,15 @@ to Amazon in Chrome (F12 -> Console, paste, Enter). Each downloads a JSON file t
    yet. Paste the list into `CONFIG.ORDER_REFS` of `scripts/amazon_extract.js` and run
    it on any Amazon page: it fetches each order's printable invoice and extracts line
    items, prices, the vendor's FSA/HSA flags and total, ship-to, payment method, and the
-   invoice HTML. The importer saves each invoice under
+   invoice HTML, gzipped (`.json.gz`, which `pt import-amazon` reads directly). The
+   importer saves each invoice under
    `<data dir>/documents/amazon/<order>.html` and sets `document_ref`, so the receipt
    needed for an HSA claim is already on disk. Per item, `unit_price` is pre-tax and
    `total` is the item's share of the grand total with tax and shipping apportioned.
+
+If Chrome blocks the download (it does after one automatic download per tab), open a
+fresh tab on amazon.com and the script's data is still in IndexedDB; or re-run with
+`DOWNLOAD: false` and save the console output.
 
 Why this order: Amazon's order-list pages only fill in order numbers client-side, so
 the Transactions page is the reliable index of what was bought. Orders paid entirely

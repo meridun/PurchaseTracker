@@ -118,10 +118,11 @@ await (async () => {
     data: orders,
   });
   if (!CONFIG.DOWNLOAD) return payload;
-  const blob = new Blob([payload], { type: 'application/json' });
+  // Invoice HTML makes this large (~250 KB per order), so gzip it; pt reads .json.gz.
+  const gz = await new Response(new Blob([payload]).stream().pipeThrough(new CompressionStream('gzip'))).blob();
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `amazon-orders-${new Date().toISOString().slice(0, 10)}.json`;
+  a.href = URL.createObjectURL(gz);
+  a.download = `amazon-orders-${new Date().toISOString().slice(0, 10)}.json.gz`;
   document.body.appendChild(a); a.click(); a.remove();
-  return `downloaded ${a.download}: ${orders.length} orders`;
+  return `downloaded ${a.download}: ${orders.length} orders, ${(gz.size / 1048576).toFixed(1)} MB`;
 })();

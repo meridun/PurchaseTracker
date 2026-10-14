@@ -161,8 +161,17 @@ def import_csv(conn: sqlite3.Connection, path: Path) -> ImportResult:
 
 # --- JSON (browser extraction) ------------------------------------------------
 
+def _read_json(path: Path):
+    """Read a .json or .json.gz file."""
+    if path.suffix.lower() == ".gz":
+        import gzip
+        with gzip.open(path, "rt", encoding="utf-8") as f:
+            return json.load(f)
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def _unwrap(path: Path) -> tuple[str, list]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+    data = _read_json(path)
     if isinstance(data, dict) and "data" in data:
         return data.get("kind", "amazon-orders"), data["data"]
     return "amazon-orders", data
