@@ -1,8 +1,9 @@
 # Purchase Tracker
 
-A small local application for tracking Amazon and other purchases. Python 3.11+ and
-SQLite, no external dependencies. Designed to evolve: the CLI is the first interface,
-and the database/model layer is kept separate so a web UI or reports can be added later.
+A small local application for tracking Amazon and other purchases at the line-item
+level, splitting costs between payers (you, a family member whose finances you manage,
+an HSA), and batching the reimbursable parts into claims. Python 3.11+ and SQLite, no
+external dependencies. See [docs/schema.md](docs/schema.md) for the data model.
 
 ## Code vs. data
 
@@ -30,6 +31,11 @@ pt init
 pt add --vendor amazon --date 2026-10-01 --item "USB-C cable" --price 7.49 --qty 2
 pt list
 pt import-amazon path/to/Retail.OrderHistory.1.csv
+pt show 1                  # items + allocations for order 1
+pt allocate 3 HSA          # whole remainder of item 3 is HSA-reimbursable
+pt allocate 4 Mom 12.50    # part of item 4 is Mom's
+pt unclaimed               # what you are owed, not yet claimed
+pt claim Mom --title "Oct 2026"
 pytest
 ```
 
@@ -46,16 +52,18 @@ is easy to extend. Re-running an import is idempotent (duplicates are skipped).
 ```
 purchase_tracker/
   config.py        data-directory resolution
-  db.py            SQLite schema + connection
-  models.py        Purchase dataclass + queries
+  db.py            SQLite schema, migrations, connection
+  models.py        table dataclasses + queries (allocate, claims, ...)
   cli.py           `pt` command-line interface
   importers/       vendor-specific importers (amazon.py)
+docs/schema.md     data model and workflow
 tests/
 ```
 
 ## Roadmap ideas
 
-- More importers (Walmart, Target, bank/credit-card statements, email receipts)
-- Categories, tags, and monthly/yearly spend reports
-- Optional local web UI
-- Backup/export (CSV, JSON)
+- Claim lifecycle commands (submit, mark paid, link reimbursing transaction)
+- Statement importers (card, bank, HSA) and order-to-charge reconciliation
+- Claim package export (summary + receipts as one PDF) for HSA submission
+- More order importers (Walmart, Target, email receipts)
+- Spend reports; optional local web UI
