@@ -342,3 +342,51 @@ def delete_allocation(conn: sqlite3.Connection, allocation_id: int) -> None:
     if row["claim_id"] is not None and row["status"] != "draft":
         raise ValueError(f"allocation {allocation_id} is on {row['status']} claim {row['claim_id']}")
     conn.execute("DELETE FROM allocations WHERE id = ?", (allocation_id,))
+
+
+# --- accounts & transactions ------------------------------------------------
+
+def get_account(conn: sqlite3.Connection, name: str) -> Account | None:
+    row = conn.execute("SELECT * FROM accounts WHERE name = ? COLLATE NOCASE", (name,)).fetchone()
+    return Account.from_row(row) if row else None
+
+
+def list_accounts(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT a.*, p.name AS party, COUNT(t.id) AS n_tx, MAX(t.posted_date) AS last_tx"
+        " FROM accounts a JOIN parties p ON p.id = a.party_id"
+        " LEFT JOIN transactions t ON t.account_id = a.id GROUP BY a.id ORDER BY a.id"
+    ).fetchall()
+
+
+def add_transaction(conn: sqlite3.Connection, account: str, date: str, amount: float,
+                    description: str | None, ref: str | None = None,
+                    notes: str | None = None) -> Transaction | None:
+    """Manual entry. Returns None if an identical (account, ref-or-content) row exists."""
+    a = get_account(conn, account)
+    if a is None:
+        raise ValueError(f"unknown account: {account}")
+    from .importers.statement import content_key
+    ext = f"manual:{ref}" if ref else "manual:" + content_key(date, amount, description or "")
+    t = Transaction(account_id=a.id, posted_date=date, amount=round(amount, 2),
+                    description=description, external_id=ext, notes=notes)
+    return t if t.insert(conn) is not None else None
+
+
+def list_transactions(conn: sqlite3.Connection, account: str | None = None,
+                      unmatched: bool = False, limit: int = 50) -> list[sqlite3.Row]:
+    """Newest first. Columns: transactions.* + account, matched (sum linked to orders)."""
+    sql = ("SELECT t.*, a.name AS account, COALESCE(SUM(op.amount), 0) AS matched"
+           " FROM transactions t JOIN accounts a ON a.id = t.account_id"
+           " LEFT JOIN order_payments op ON op.transaction_id = t.id")
+    where, args = [], []
+    if account:
+        where.append("a.name = ? COLLATE NOCASE"); args.append(account)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " GROUP BY t.id"
+    if unmatched:
+        sql += " HAVING t.amount < 0 AND matched = 0"
+    sql += " ORDER BY t.posted_date DESC, t.id DESC LIMIT ?"
+    args.append(limit)
+    return conn.execute(sql, args).fetchall()

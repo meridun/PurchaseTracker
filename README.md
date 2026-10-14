@@ -39,6 +39,10 @@ pt claim new Mom --title "Oct 2026"
 pt claim submit 1 --document "FilingCabinet:claims/2026-10-mom.pdf"
 pt claim paid 1 --transaction 42   # link the deposit once statements are imported
 pt claims
+pt account add "Chase Visa" --kind credit --last4 1234
+pt import-statement path/to/Chase_Activity.csv --account "Chase Visa"   # auto-detects format
+pt tx add --account "Chase Visa" --date 2026-10-05 --amount -45.10 --desc "Walgreens"
+pt tx list --unmatched          # charges not yet linked to an order
 pytest
 ```
 
@@ -49,6 +53,15 @@ export instead: Account -> Privacy Central -> *Request My Data* -> *Your Orders*
 export arrives as a zip containing `Retail.OrderHistory.*.csv`. Column names vary by
 export version; `purchase_tracker/importers/amazon.py` accepts the common variants and
 is easy to extend. Re-running an import is idempotent (duplicates are skipped).
+
+## Statement import
+
+`pt import-statement` auto-detects Chase, Amex, Capital One, Discover, Citi, Bank of
+America, and a generic `Date,Description,Amount` layout from the CSV headers, and
+normalises amounts so that negative = money out. Use `--format` to force a profile and
+`--flip-sign` if a bank's purchases come out positive. Adding a bank is one `Profile`
+entry in `purchase_tracker/importers/statement.py`. Re-imports of overlapping date
+ranges skip rows already present.
 
 ## Layout
 
@@ -65,7 +78,7 @@ tests/
 
 ## Roadmap ideas
 
-- Statement importers (card, bank, HSA) and order-to-charge reconciliation
+- Order-to-charge reconciliation (`order_payments`), with Amazon's per-shipment splits
 - Claim package export (summary + receipts as one PDF) for HSA submission
 - More order importers (Walmart, Target, email receipts)
 - Spend reports; optional local web UI

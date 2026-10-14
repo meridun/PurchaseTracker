@@ -9,8 +9,9 @@ from . import __version__
 from .config import ENV_VAR, db_path, resolve_data_dir
 from .db import SCHEMA_VERSION, connect, init_db, schema_version
 from .models import (
-    Item, Order, allocate, claim_add_allocations, claim_allocations, claim_remove_allocations,
-    create_claim, delete_allocation, items_for_order, list_claims, list_orders, list_parties,
+    Account, Item, Order, add_transaction, allocate, claim_add_allocations, claim_allocations,
+    claim_remove_allocations, create_claim, delete_allocation, get_account, get_party,
+    items_for_order, list_accounts, list_claims, list_orders, list_parties, list_transactions,
     pay_claim, reject_claim, reopen_claim, submit_claim, unclaimed,
 )
 
@@ -220,6 +221,69 @@ def cmd_unallocate(args):
     print(f"deleted allocation {args.allocation_id}")
 
 
+def cmd_accounts(args):
+    _, conn = _open(args)
+    rows = list_accounts(conn)
+    if not rows:
+        print("no accounts (pt account add ...)")
+        return
+    print(f"{'id':>3}  {'name':20}  {'party':8}  {'kind':9}  {'inst':12}  {'last4':5}  {'tx':>4}  last")
+    for a in rows:
+        print(f"{a['id']:>3}  {a['name'][:20]:20}  {a['party'][:8]:8}  {a['kind']:9}  "
+              f"{(a['institution'] or '')[:12]:12}  {a['last4'] or '':5}  {a['n_tx']:>4}  {a['last_tx'] or ''}")
+
+
+def cmd_account_add(args):
+    _, conn = _open(args)
+    p = get_party(conn, args.party)
+    if p is None:
+        sys.exit(f"error: unknown party {args.party!r} (see pt parties)")
+    acct = Account(name=args.name, party_id=p.id, kind=args.kind, institution=args.institution,
+                   last4=args.last4, notes=args.notes)
+    if acct.insert(conn) is None:
+        sys.exit(f"error: account {args.name!r} already exists")
+    conn.commit()
+    print(f"account {acct.id}: {acct.name} ({args.kind}, {p.name})")
+
+
+def cmd_tx_add(args):
+    _, conn = _open(args)
+    try:
+        t = add_transaction(conn, args.account, args.date, args.amount, args.desc, args.ref, args.notes)
+    except ValueError as e:
+        sys.exit(f"error: {e}")
+    conn.commit()
+    if t is None:
+        sys.exit("skipped: identical transaction already recorded (use --ref to disambiguate)")
+    print(f"transaction {t.id}: {t.posted_date} {t.amount:+.2f} {t.description or ''}")
+
+
+def cmd_tx_list(args):
+    _, conn = _open(args)
+    rows = list_transactions(conn, args.account, args.unmatched, args.limit)
+    if not rows:
+        print("no transactions")
+        return
+    print(f"{'id':>4}  {'date':10}  {'account':14}  {'amount':>9}  {'matched':>8}  description")
+    for t in rows:
+        print(f"{t['id']:>4}  {t['posted_date']:10}  {t['account'][:14]:14}  {t['amount']:>9.2f}  "
+              f"{t['matched']:>8.2f}  {(t['description'] or '')[:50]}")
+
+
+def cmd_import_statement(args):
+    from .importers.statement import import_csv
+
+    _, conn = _open(args)
+    acct = get_account(conn, args.account)
+    if acct is None:
+        sys.exit(f"error: unknown account {args.account!r} (see pt accounts)")
+    try:
+        r = import_csv(conn, Path(args.csv), acct.id, args.format, args.flip_sign)
+    except ValueError as e:
+        sys.exit(f"error: {e}")
+    print(f"format {r.profile}: {r.new} new, {r.skipped} already present")
+
+
 def cmd_import_amazon(args):
     from .importers.amazon import import_csv
 
@@ -323,6 +387,42 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("claim_id", type=int)
     x.add_argument("allocations", type=int, nargs="+")
     x.set_defaults(fn=cmd_claim_remove)
+
+    sub.add_parser("accounts", help="list accounts").set_defaults(fn=cmd_accounts)
+    ac = sub.add_parser("account", help="account management: add")
+    acs = ac.add_subparsers(dest="account_cmd", required=True)
+    x = acs.add_parser("add", help="add an account")
+    x.add_argument("name")
+    x.add_argument("--party", default="Me", help="owner (default Me)")
+    x.add_argument("--kind", default="credit", choices=["checking", "savings", "credit", "hsa", "cash", "other"])
+    x.add_argument("--institution")
+    x.add_argument("--last4")
+    x.add_argument("--notes")
+    x.set_defaults(fn=cmd_account_add)
+
+    tx = sub.add_parser("tx", help="transactions: add, list")
+    txs = tx.add_subparsers(dest="tx_cmd", required=True)
+    x = txs.add_parser("add", help="record a transaction by hand (negative = money out)")
+    x.add_argument("--account", required=True)
+    x.add_argument("--date", required=True, help="YYYY-MM-DD")
+    x.add_argument("--amount", required=True, type=float, help="negative = money out, positive = in")
+    x.add_argument("--desc", help="description")
+    x.add_argument("--ref", help="bank reference / check number; also disambiguates identical entries")
+    x.add_argument("--notes")
+    x.set_defaults(fn=cmd_tx_add)
+    x = txs.add_parser("list", help="list transactions, newest first")
+    x.add_argument("--account")
+    x.add_argument("--unmatched", action="store_true", help="only charges not yet linked to an order")
+    x.add_argument("--limit", type=int, default=50)
+    x.set_defaults(fn=cmd_tx_list)
+
+    from .importers.statement import PROFILE_BY_NAME
+    st = sub.add_parser("import-statement", help="import a card/bank statement CSV")
+    st.add_argument("csv")
+    st.add_argument("--account", required=True, help="account name (see pt accounts)")
+    st.add_argument("--format", choices=list(PROFILE_BY_NAME), help="default: auto-detect from headers")
+    st.add_argument("--flip-sign", action="store_true", help="if purchases come out positive")
+    st.set_defaults(fn=cmd_import_statement)
 
     i = sub.add_parser("import-amazon", help="import an Amazon order-history CSV export")
     i.add_argument("csv")
