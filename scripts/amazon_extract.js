@@ -9,10 +9,13 @@
 // Nothing is sent anywhere; it only reads pages you can already see.
 
 const CONFIG = {
-  MAX_PAGES: 50,            // list pages to walk (10 orders each)
+  // Preferred: paste the output of `pt amazon-refs` here. Those are the order numbers
+  // seen on Amazon's Transactions page that have no invoice imported yet.
+  ORDER_REFS: null,         // e.g. ["112-1234567-1234567", ...]; null = use the current list page
+  MAX_PAGES: 50,            // list pages to walk when ORDER_REFS is null (10 orders each)
   INCLUDE_INVOICE_HTML: true,
   DOWNLOAD: true,           // false: return the JSON string instead of saving a file
-  DELAY_MS: 400,            // pause between fetches
+  DELAY_MS: 250,            // pause between fetches
 };
 
 await (async () => {
@@ -71,25 +74,42 @@ await (async () => {
     };
   };
 
-  const invoiceLinks = d => [...d.querySelectorAll('a')]
-    .filter(a => /view invoice/i.test(a.textContent)).map(a => a.href);
+  const invoiceUrl = ref => {
+    const u = new URL('/gp/css/summary/print.html', location.origin);
+    u.searchParams.set('orderID', ref);
+    return u.href;
+  };
+
+  // Which orders to fetch. Order-list pages fetched without a browser render come back
+  // without order numbers (they are filled in client-side), so walking the list only
+  // works for the page you are looking at. The reliable source of order numbers is the
+  // Transactions page (scripts/amazon_transactions.js -> `pt amazon-refs`).
+  let refs;
+  if (CONFIG.ORDER_REFS) {
+    refs = CONFIG.ORDER_REFS;
+  } else {
+    refs = [...document.querySelectorAll('.order-card')]
+      .map(c => (c.textContent.match(/ORDER #\s*([\w-]{15,})/i) || [])[1]).filter(Boolean);
+    console.warn(`ORDER_REFS not set: extracting only the ${refs.length} orders on this page`);
+  }
 
   const orders = [];
-  const seen = new Set();
-  const listUrl = new URL(location.href);
-  for (let page = 0; page < CONFIG.MAX_PAGES; page++) {
-    listUrl.searchParams.set('startIndex', String(page * 10));
-    const [listDoc] = page === 0 ? [document] : await fetchDoc(listUrl.href);
-    const links = invoiceLinks(listDoc).filter(u => !seen.has(u));
-    if (!links.length) break;
-    for (const url of links) {
-      seen.add(url);
-      const [d, html] = await fetchDoc(url);
-      orders.push(parseInvoice(d, html));
-      await sleep(CONFIG.DELAY_MS);
+  const failed = [];
+  for (const ref of [...new Set(refs)]) {
+    try {
+      const [d, html] = await fetchDoc(invoiceUrl(ref));
+      const o = parseInvoice(d, html);
+      if (!o.order_ref) { o.order_ref = ref; o.parse_warning = 'invoice page had no order components'; }
+      orders.push(o);
+    } catch (e) {
+      failed.push({ ref, error: e.message });
     }
-    console.log(`page ${page + 1}: ${orders.length} orders so far`);
+    window.__ptProgress = `${orders.length}/${refs.length} fetched, ${failed.length} failed`;
+    if (orders.length % 25 === 0) console.log(window.__ptProgress);
+    await sleep(CONFIG.DELAY_MS);
   }
+  window.__ptOrders = orders;
+  if (failed.length) console.warn('failed:', failed);
 
   const payload = JSON.stringify({
     kind: 'amazon-orders',

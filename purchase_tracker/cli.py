@@ -313,6 +313,26 @@ def cmd_import_amazon(args):
               f"{rr.charges_without_order} charges for orders not yet imported")
 
 
+def cmd_amazon_refs(args):
+    """Order numbers seen on Amazon's Transactions page that have no invoice imported yet.
+
+    Paste the output into CONFIG.ORDER_REFS in scripts/amazon_extract.js.
+    """
+    import json
+
+    _, conn = _open(args)
+    sql = ("SELECT DISTINCT order_ref FROM vendor_charges WHERE vendor = 'amazon'"
+           " AND order_ref NOT IN (SELECT order_ref FROM orders WHERE vendor = 'amazon'"
+           "                       AND source = 'amazon-invoice' AND order_ref IS NOT NULL)")
+    params: list = []
+    if args.since:
+        sql += " AND charge_date >= ?"
+        params.append(args.since)
+    refs = [r["order_ref"] for r in conn.execute(sql + " ORDER BY order_ref", params)]
+    print(json.dumps(refs))
+    print(f"{len(refs)} orders need invoices", file=sys.stderr)
+
+
 def cmd_reconcile(args):
     _, conn = _open(args)
     rr = reconcile(conn, args.window)
@@ -459,6 +479,10 @@ def build_parser() -> argparse.ArgumentParser:
                             " (orders + invoices) or scripts/amazon_transactions.js (card charges)")
     i.add_argument("file")
     i.set_defaults(fn=cmd_import_amazon)
+
+    ar = sub.add_parser("amazon-refs", help="order numbers from Amazon charges that still need an invoice (JSON)")
+    ar.add_argument("--since", help="only charges on/after YYYY-MM-DD")
+    ar.set_defaults(fn=cmd_amazon_refs)
 
     rc = sub.add_parser("reconcile", help="match vendor charges to bank lines and record order payments")
     rc.add_argument("--window", type=int, default=6, help="days after the charge a bank line may post")
