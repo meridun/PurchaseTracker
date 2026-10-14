@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "purchase-tracker"
+version = "0.1.0"
+description = "Track Amazon and other purchases in a local SQLite database."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+pt = "purchase_tracker.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["purchase_tracker*"]
