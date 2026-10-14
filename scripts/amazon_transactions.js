@@ -29,16 +29,19 @@ await (async () => {
     let date = null;
     for (const el of d.querySelectorAll('.apx-transaction-date-container, .apx-transactions-line-item-component-container')) {
       if (el.classList.contains('apx-transaction-date-container')) { date = norm(el.textContent); continue; }
-      const blocks = [...el.children].map(b => [...b.querySelectorAll('span, a')].map(e => norm(e.textContent)).filter(Boolean));
-      const [head = [], statusB = [], orderB = [], merchantB = []] = blocks;
-      const amountText = head.find(s => /\$/.test(s)) || '';
+      // Blocks vary by row (the status block only exists while pending), so classify by content.
+      const texts = [...el.querySelectorAll('span, a')].map(e => norm(e.textContent)).filter(Boolean);
+      const amountText = texts.find(s => /\$/.test(s)) || '';
+      const orderText  = texts.find(s => /Order #/i.test(s)) || '';
+      const statusText = texts.find(s => /^(pending|completed|declined|refunded)$/i.test(s));
+      const rest = texts.filter(s => s !== amountText && s !== orderText && s !== statusText);
       rows.push({
         date: isoDate(date),
-        instrument: head.find(s => !/\$/.test(s)) || null,
+        instrument: rest[0] || null,          // first non-amount text: 'Discover ****1234'
         amount: money(amountText),
-        status: statusB[0] || 'Completed',
-        order_ref: ((orderB.join(' ').match(/Order #\s*([\w-]+)/) || [])[1]) || null,
-        merchant: merchantB[0] || null,
+        status: statusText || 'Completed',
+        order_ref: ((orderText.match(/Order #\s*([\w-]+)/i) || [])[1]) || null,
+        merchant: rest[1] || null,            // 'AMZN Mktp US', 'Amazon.com', 'Amazon Tips'
       });
     }
     return rows;
