@@ -323,7 +323,7 @@ def cmd_amazon_refs(args):
     _, conn = _open(args)
     sql = ("SELECT DISTINCT order_ref FROM vendor_charges WHERE vendor = 'amazon'"
            " AND order_ref NOT IN (SELECT order_ref FROM orders WHERE vendor = 'amazon'"
-           "                       AND source = 'amazon-invoice' AND order_ref IS NOT NULL)")
+           "                       AND document_ref IS NOT NULL AND order_ref IS NOT NULL)")
     params: list = []
     if args.since:
         sql += " AND charge_date >= ?"

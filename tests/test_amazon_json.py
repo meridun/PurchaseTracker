@@ -36,6 +36,16 @@ def test_v3_columns_present(conn):
     assert {"ship_to", "payment_method", "tax", "hsa_eligible_total"} <= cols
 
 
+def test_normalize_payment():
+    from purchase_tracker.importers.amazon import normalize_payment as n
+    assert n("Discover® More®••••1234") == "Discover ****1234"
+    assert n("Discover ending in 1234 <div class=\"\"") == "Discover ****1234"
+    assert n("Amazon Gift Card $11.06 balance applied Discover® More®••••1234") == "Discover ****1234 + gift card $11.06"
+    assert n("Discover® More®••••1234 Amazon Gift Card") == "Discover ****1234 + gift card"
+    assert n("!function(){try{var e=document.createElement('meta')}catch(e){}}(); Visa ending in 9876") == "Visa ****9876"
+    assert n("") is None and n(None) is None and n("nothing useful") is None
+
+
 def test_apportion_sums_exactly():
     assert _apportion(51.38, [23.48, 24.99]) == [24.89, 26.49]
     assert sum(_apportion(10.0, [3.33, 3.33, 3.33])) == pytest.approx(10.0)

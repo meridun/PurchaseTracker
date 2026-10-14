@@ -31,6 +31,8 @@ await (async () => {
   };
 
   const parseInvoice = (d, html) => {
+    // Some invoice variants embed <script> inside data components; drop them before reading text.
+    d.querySelectorAll('script, style, noscript').forEach(e => e.remove());
     const q  = (n, r = d) => r.querySelector(`[data-component="${n}"]`);
     const qa = (n, r = d) => [...r.querySelectorAll(`[data-component="${n}"]`)];
     const t  = (n, r = d) => norm(q(n, r)?.textContent);

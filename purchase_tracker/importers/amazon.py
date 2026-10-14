@@ -181,6 +181,36 @@ def _safe_name(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", s)
 
 
+_CARD = re.compile(
+    r"(Visa|Mastercard|MasterCard|Discover|American Express|Amex|Store Card|Prime Visa|Synchrony)"
+    r"[^0-9]{0,40}?(\d{4})\b", re.I)
+_GIFT = re.compile(r"Gift Card\s*\$?([\d,]+\.\d\d)?", re.I)
+
+
+def normalize_payment(text: str | None) -> str | None:
+    """Reduce Amazon's payment-method blurb to 'Brand ****1234' (+ ' + gift card $x.xx').
+
+    The raw widget text varies ('Discover® More®••••1234', 'Discover ending in 1234',
+    'Amazon Gift Card $11.06 balance applied Discover ...') and occasionally contains
+    embedded script. Returns None when nothing recognisable is present.
+    """
+    if not text:
+        return None
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    if len(text) > 2000 or "{" in text[:200]:
+        text = text[:200]
+    parts = []
+    m = _CARD.search(text)
+    if m:
+        brand = m.group(1).title().replace("Mastercard", "Mastercard")
+        parts.append(f"{brand} ****{m.group(2)}")
+    g = _GIFT.search(text)
+    if g:
+        parts.append(f"gift card ${g.group(1)}" if g.group(1) else "gift card")
+    return " + ".join(parts) or None
+
+
 def import_json(conn: sqlite3.Connection, path: Path, docs_dir: Path | None = None) -> ImportResult:
     """Import orders extracted by ``scripts/amazon_extract.js``.
 
@@ -208,7 +238,7 @@ def import_json(conn: sqlite3.Connection, path: Path, docs_dir: Path | None = No
         order = Order(
             vendor="amazon", order_ref=o["order_ref"], order_date=_date(o["order_date"]),
             total=o.get("grand_total"), source="amazon-invoice", document_ref=doc_ref,
-            ship_to=o.get("ship_to"), payment_method=o.get("payment_method"),
+            ship_to=o.get("ship_to"), payment_method=normalize_payment(o.get("payment_method")),
             subtotal=o.get("subtotal"), shipping=o.get("shipping"), tax=o.get("tax"),
             hsa_eligible_total=o.get("hsa_eligible_total"),
         )
