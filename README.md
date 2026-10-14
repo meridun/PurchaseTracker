@@ -52,19 +52,27 @@ pytest
 Two routes, both idempotent (re-imports skip what is already there):
 
 **Browser extraction (richer, immediate).** Two console scripts, run while logged in
-to Amazon in Chrome (F12 -> Console, paste, Enter). Each walks its pages, then downloads
-a JSON file that `pt import-amazon <file>` ingests:
+to Amazon in Chrome (F12 -> Console, paste, Enter). Each downloads a JSON file that
+`pt import-amazon <file>` ingests. Run them in this order:
 
-- `scripts/amazon_extract.js` on *Your Orders* (any year filter): every order's line
-  items, prices, the vendor's FSA/HSA flags and total, ship-to, payment method, and the
-  printable invoice HTML. The importer saves each invoice under
-  `<data dir>/documents/amazon/<order>.html` and sets `document_ref`, so the receipt
-  needed for an HSA claim is already on disk. Per item, `unit_price` is pre-tax and
-  `total` is the item's share of the grand total with tax and shipping apportioned.
-- `scripts/amazon_transactions.js` on *Your Payments -> Transactions*: every card
-  charge with its order number, including Amazon's per-shipment splits. Stored in
-  `vendor_charges`; `pt reconcile` (run automatically after imports) matches them to
-  statement lines by card last-4, amount, and date, and records `order_payments`.
+1. `scripts/amazon_transactions.js` on *Your Payments -> Transactions*: every card
+   charge with its order number, including Amazon's per-shipment splits, paging back to
+   `CONFIG.STOP_BEFORE`. Stored in `vendor_charges`; `pt reconcile` (run automatically
+   after imports) matches them to statement lines by card last-4, amount, and date, and
+   records `order_payments`.
+2. `pt amazon-refs` prints the order numbers from those charges that have no invoice
+   yet. Paste the list into `CONFIG.ORDER_REFS` of `scripts/amazon_extract.js` and run
+   it on any Amazon page: it fetches each order's printable invoice and extracts line
+   items, prices, the vendor's FSA/HSA flags and total, ship-to, payment method, and the
+   invoice HTML. The importer saves each invoice under
+   `<data dir>/documents/amazon/<order>.html` and sets `document_ref`, so the receipt
+   needed for an HSA claim is already on disk. Per item, `unit_price` is pre-tax and
+   `total` is the item's share of the grand total with tax and shipping apportioned.
+
+Why this order: Amazon's order-list pages only fill in order numbers client-side, so
+the Transactions page is the reliable index of what was bought. Orders paid entirely
+with a gift-card balance may not appear there; run `amazon_extract.js` without
+`ORDER_REFS` on the relevant list page to pick those up.
 
 **Privacy Central CSV (bulk history).** Account -> Privacy Central -> *Request My
 Data* -> *Your Orders*; the zip contains `Retail.OrderHistory.*.csv`. Run
