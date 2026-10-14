@@ -17,8 +17,8 @@ parties ──< accounts ──< transactions >──┐
 |---|---|---|
 | `parties` | a payer: Me, Mom, HSA | Seeded on first run. `kind` drives behaviour (`self` is never "owed"). |
 | `accounts` | a money container owned by a party | Card, checking, HSA. Thin: no balances. |
-| `orders` | a purchase from a vendor | Unique on `(vendor, order_ref)`. `document_ref` points at the receipt in FilingCabinet. |
-| `items` | a line on an order | `line_key` (ASIN or content hash) makes re-imports idempotent. |
+| `orders` | a purchase from a vendor | Unique on `(vendor, order_ref)`. `ship_to`, `payment_method`, `subtotal`/`shipping`/`tax`, and the vendor's `hsa_eligible_total` when known. `document_ref` points at the receipt in FilingCabinet. |
+| `items` | a line on an order | `line_key` (ASIN or content hash) makes re-imports idempotent. `unit_price` is pre-tax; `total` is the line's share of the order grand total (tax/shipping apportioned) so lines sum to the charge. `hsa_eligible` is the vendor's flag. |
 | `allocations` | part of an item's cost assigned to a party | Sum per item never exceeds the item total. Unallocated remainder is yours. |
 | `claims` | a batch of allocations sent to one party | `draft → submitted → paid/rejected`. `paid_transaction_id` links the deposit that closed it. |
 | `transactions` | a bank/card statement line | Signed amount, negative = out. Unique on `(account_id, external_id)`. |

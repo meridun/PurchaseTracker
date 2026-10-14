@@ -65,10 +65,22 @@ class Order(_Row):
     source: str = "manual"
     document_ref: str | None = None
     notes: str | None = None
+    ship_to: str | None = None
+    payment_method: str | None = None
+    subtotal: float | None = None
+    shipping: float | None = None
+    tax: float | None = None
+    hsa_eligible_total: float | None = None
     id: int | None = None
 
+    DETAIL_COLS = ("total", "ship_to", "payment_method", "subtotal", "shipping", "tax",
+                   "hsa_eligible_total", "document_ref")
+
     def get_or_insert(self, conn: sqlite3.Connection) -> tuple[int, bool]:
-        """Insert, or look up the existing order with the same (vendor, order_ref)."""
+        """Insert, or look up the existing order with the same (vendor, order_ref).
+
+        On an existing order, fill in any detail columns that are still NULL.
+        """
         new_id = self.insert(conn)
         if new_id is not None:
             return new_id, True
@@ -76,6 +88,9 @@ class Order(_Row):
             "SELECT id FROM orders WHERE vendor = ? AND order_ref = ?", (self.vendor, self.order_ref)
         ).fetchone()
         self.id = row["id"]
+        sets = ", ".join(f"{c} = COALESCE({c}, ?)" for c in self.DETAIL_COLS)
+        conn.execute(f"UPDATE orders SET {sets} WHERE id = ?",
+                     (*(getattr(self, c) for c in self.DETAIL_COLS), self.id))
         return self.id, False
 
 
@@ -91,6 +106,7 @@ class Item(_Row):
     total: float | None = None
     category: str | None = None
     notes: str | None = None
+    hsa_eligible: int | None = None  # 1 / 0 from the vendor, None = unknown
     id: int | None = None
 
 

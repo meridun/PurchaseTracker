@@ -48,11 +48,20 @@ pytest
 
 ## Amazon import
 
-Amazon no longer offers an order-history CSV from the Orders page. Request a data
-export instead: Account -> Privacy Central -> *Request My Data* -> *Your Orders*. The
-export arrives as a zip containing `Retail.OrderHistory.*.csv`. Column names vary by
-export version; `purchase_tracker/importers/amazon.py` accepts the common variants and
-is easy to extend. Re-running an import is idempotent (duplicates are skipped).
+Two routes, both idempotent (re-imports skip what is already there):
+
+**Browser extraction (richer, immediate).** Open *Your Orders* for a year in Chrome,
+paste `scripts/amazon_extract.js` into the console (or let Claude in Chrome run it). It
+fetches the printable invoice for every order on the page and returns JSON with line
+items, prices, the vendor's FSA/HSA-eligible flags and total, ship-to name, and
+payment method. Save it and run `pt import-amazon orders.json`. Per item,
+`unit_price` is the pre-tax price and `total` is the item's share of the grand total
+with tax and shipping apportioned, so items add up to what the card was charged.
+
+**Privacy Central CSV (bulk history).** Account -> Privacy Central -> *Request My
+Data* -> *Your Orders*; the zip contains `Retail.OrderHistory.*.csv`. Run
+`pt import-amazon Retail.OrderHistory.1.csv`. Orders first seen via CSV are enriched
+when the same order later arrives via the JSON route.
 
 ## Statement import
 

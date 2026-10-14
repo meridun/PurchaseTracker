@@ -70,10 +70,10 @@ def cmd_list(args):
     if not rows:
         print("no orders")
         return
-    print(f"{'id':>4}  {'date':10}  {'vendor':10}  {'items':>5}  {'total':>9}  order ref")
+    print(f"{'id':>4}  {'date':10}  {'vendor':10}  {'items':>5}  {'total':>9}  {'ship to':16}  order ref")
     for r in rows:
         print(f"{r['id']:>4}  {r['order_date']:10}  {r['vendor'][:10]:10}  {r['n_items']:>5}  "
-              f"{_money(r['total']):>9}  {r['order_ref'] or ''}")
+              f"{_money(r['total']):>9}  {(r['ship_to'] or '')[:16]:16}  {r['order_ref'] or ''}")
 
 
 def cmd_show(args):
@@ -82,10 +82,16 @@ def cmd_show(args):
     if o is None:
         sys.exit(f"no order with id {args.order_id}")
     print(f"order {o['id']}  {o['vendor']}  {o['order_ref'] or ''}  {o['order_date']}  total {_money(o['total'])}")
-    print(f"{'item':>5}  {'qty':>3}  {'total':>9}  {'alloc':>9}  {'unalloc':>9}  name")
+    extra = [f"ship to: {o['ship_to']}" if o["ship_to"] else "",
+             f"paid with: {o['payment_method']}" if o["payment_method"] else "",
+             f"HSA-eligible: {_money(o['hsa_eligible_total'])}" if o["hsa_eligible_total"] else ""]
+    if any(extra):
+        print("  " + "   ".join(e for e in extra if e))
+    print(f"{'item':>5}  {'qty':>3}  {'total':>9}  {'alloc':>9}  {'unalloc':>9}  {'hsa':3}  name")
     for i in items_for_order(conn, o["id"]):
+        hsa = {1: "yes", 0: "no"}.get(i["hsa_eligible"], "")
         print(f"{i['id']:>5}  {i['quantity']:>3}  {_money(i['total']):>9}  {_money(i['allocated']):>9}  "
-              f"{_money(i['unallocated']):>9}  {i['name'][:55]}")
+              f"{_money(i['unallocated']):>9}  {hsa:3}  {i['name'][:55]}")
 
 
 def cmd_parties(args):
@@ -285,11 +291,13 @@ def cmd_import_statement(args):
 
 
 def cmd_import_amazon(args):
-    from .importers.amazon import import_csv
+    from .importers.amazon import import_csv, import_json
 
     _, conn = _open(args)
-    r = import_csv(conn, Path(args.csv))
-    print(f"orders: {r.orders_new} new; items: {r.items_new} new, {r.items_skipped} already present")
+    path = Path(args.file)
+    r = (import_json if path.suffix.lower() == ".json" else import_csv)(conn, path)
+    print(f"orders: {r.orders_new} new, {r.orders_seen} already present; "
+          f"items: {r.items_new} new, {r.items_skipped} already present")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -424,8 +432,9 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--flip-sign", action="store_true", help="if purchases come out positive")
     st.set_defaults(fn=cmd_import_statement)
 
-    i = sub.add_parser("import-amazon", help="import an Amazon order-history CSV export")
-    i.add_argument("csv")
+    i = sub.add_parser("import-amazon",
+                       help="import Amazon orders: .csv (Privacy Central export) or .json (scripts/amazon_extract.js)")
+    i.add_argument("file")
     i.set_defaults(fn=cmd_import_amazon)
     return ap
 

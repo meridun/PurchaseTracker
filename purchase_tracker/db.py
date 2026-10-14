@@ -203,9 +203,23 @@ def _v2(conn: sqlite3.Connection) -> None:
     _migrate_v1_rows(conn)
 
 
+# ---------------------------------------------------------------------------
+# v3: fields learned from Amazon's invoice pages
+# ---------------------------------------------------------------------------
+_V3 = """
+ALTER TABLE orders ADD COLUMN ship_to            TEXT;   -- recipient name: strong hint for who pays
+ALTER TABLE orders ADD COLUMN payment_method     TEXT;   -- e.g. 'Discover ...1234'
+ALTER TABLE orders ADD COLUMN subtotal           REAL;   -- pre-tax item subtotal
+ALTER TABLE orders ADD COLUMN shipping           REAL;
+ALTER TABLE orders ADD COLUMN tax                REAL;
+ALTER TABLE orders ADD COLUMN hsa_eligible_total REAL;   -- vendor-stated FSA/HSA-eligible amount incl. tax
+ALTER TABLE items  ADD COLUMN hsa_eligible       INTEGER; -- 1/0 from the vendor, NULL = unknown
+"""
+
 MIGRATIONS: list[Callable[[sqlite3.Connection], None]] = [
     lambda c: c.executescript(_V1),  # 1
     _v2,                              # 2
+    lambda c: c.executescript(_V3),  # 3
 ]
 SCHEMA_VERSION = len(MIGRATIONS)
 

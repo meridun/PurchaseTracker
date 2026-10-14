@@ -44,7 +44,7 @@ def test_upgrade_from_v1(tmp_path):
     c.commit(); c.close()
 
     conn = connect(path)
-    assert init_db(conn) == 1
+    assert init_db(conn) == SCHEMA_VERSION - 1
     assert schema_version(conn) == SCHEMA_VERSION
     orders = list_orders(conn)
     assert {(o["vendor"], o["n_items"], o["total"]) for o in orders} == {("amazon", 2, 25.0), ("cvs", 1, 8.0)}
