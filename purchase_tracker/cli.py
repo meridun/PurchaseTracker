@@ -9,7 +9,9 @@ from . import __version__
 from .config import ENV_VAR, db_path, resolve_data_dir
 from .db import SCHEMA_VERSION, connect, init_db, schema_version
 from .models import (
-    Item, Order, allocate, create_claim, items_for_order, list_orders, list_parties, unclaimed,
+    Item, Order, allocate, claim_add_allocations, claim_allocations, claim_remove_allocations,
+    create_claim, delete_allocation, items_for_order, list_claims, list_orders, list_parties,
+    pay_claim, reject_claim, reopen_claim, submit_claim, unclaimed,
 )
 
 
@@ -112,12 +114,110 @@ def cmd_unclaimed(args):
     print(f"{'':5}  {'':8}  {'':10}  {total:>8.2f}  total")
 
 
-def cmd_claim(args):
+CLAIM_HEADER = f"{'id':>4}  {'party':8}  {'status':9}  {'date':10}  {'n':>3}  {'total':>9}  title"
+
+
+def _claim_line(t) -> str:
+    when = t["paid_at"] or t["submitted_at"] or t["created_at"][:10]
+    paid = f"  paid {t['paid_amount']:.2f}" if t["paid_amount"] is not None else ""
+    return (f"{t['claim_id']:>4}  {t['party'][:8]:8}  {t['status']:9}  {when:10}  "
+            f"{t['n_allocations']:>3}  {t['total']:>9.2f}{paid}  {t['title'] or ''}")
+
+
+def _print_claim(conn, claim_id: int):
+    t = next(r for r in list_claims(conn) if r["claim_id"] == claim_id)
+    print(CLAIM_HEADER)
+    print(_claim_line(t))
+
+
+def cmd_claims(args):
+    _, conn = _open(args)
+    rows = list_claims(conn, args.party, args.status)
+    if not rows:
+        print("no claims")
+        return
+    print(CLAIM_HEADER)
+    for t in rows:
+        print(_claim_line(t))
+
+
+def cmd_claim_new(args):
     _, conn = _open(args)
     c = create_claim(conn, args.party, args.title, args.allocations or None)
     conn.commit()
-    t = conn.execute("SELECT * FROM v_claim_totals WHERE claim_id = ?", (c.id,)).fetchone()
-    print(f"claim {c.id} for {t['party']}: {t['n_allocations']} allocations, {t['total']:.2f} ({t['status']})")
+    _print_claim(conn, c.id)
+
+
+def cmd_claim_show(args):
+    _, conn = _open(args)
+    c = conn.execute("SELECT * FROM claims WHERE id = ?", (args.claim_id,)).fetchone()
+    if c is None:
+        sys.exit(f"error: no claim with id {args.claim_id}")
+    _print_claim(conn, args.claim_id)
+    for k in ("submitted_at", "paid_at", "paid_transaction_id", "document_ref", "notes"):
+        if c[k] is not None:
+            print(f"  {k:20} {c[k]}")
+    print(f"\n{'alloc':>5}  {'date':10}  {'order':>5}  {'amount':>8}  item")
+    for r in claim_allocations(conn, args.claim_id):
+        print(f"{r['allocation_id']:>5}  {r['order_date']:10}  {r['order_id']:>5}  {r['amount']:>8.2f}  {r['item'][:50]}")
+
+
+def _lifecycle(fn):
+    """Open the db, run a claim mutation, commit, print the claim row. ValueError -> exit."""
+    def run(args):
+        _, conn = _open(args)
+        try:
+            fn(conn, args)
+        except ValueError as e:
+            sys.exit(f"error: {e}")
+        conn.commit()
+        _print_claim(conn, args.claim_id)
+    return run
+
+
+@_lifecycle
+def cmd_claim_submit(conn, args):
+    submit_claim(conn, args.claim_id, args.date, args.document)
+
+
+@_lifecycle
+def cmd_claim_paid(conn, args):
+    c = pay_claim(conn, args.claim_id, args.amount, args.date, args.transaction)
+    total = conn.execute("SELECT total FROM v_claim_totals WHERE claim_id = ?", (c.id,)).fetchone()["total"]
+    if abs(c.paid_amount - total) > 0.005:
+        print(f"note: paid {c.paid_amount:.2f} differs from claim total {total:.2f}", file=sys.stderr)
+
+
+@_lifecycle
+def cmd_claim_reject(conn, args):
+    reject_claim(conn, args.claim_id, args.notes)
+
+
+@_lifecycle
+def cmd_claim_reopen(conn, args):
+    reopen_claim(conn, args.claim_id)
+
+
+@_lifecycle
+def cmd_claim_add(conn, args):
+    n = claim_add_allocations(conn, args.claim_id, args.allocations)
+    print(f"attached {n} of {len(args.allocations)} allocations")
+
+
+@_lifecycle
+def cmd_claim_remove(conn, args):
+    n = claim_remove_allocations(conn, args.claim_id, args.allocations)
+    print(f"detached {n} of {len(args.allocations)} allocations")
+
+
+def cmd_unallocate(args):
+    _, conn = _open(args)
+    try:
+        delete_allocation(conn, args.allocation_id)
+    except ValueError as e:
+        sys.exit(f"error: {e}")
+    conn.commit()
+    print(f"deleted allocation {args.allocation_id}")
 
 
 def cmd_import_amazon(args):
@@ -170,11 +270,59 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument("--party")
     u.set_defaults(fn=cmd_unclaimed)
 
-    c = sub.add_parser("claim", help="open a draft claim from unclaimed allocations")
-    c.add_argument("party")
-    c.add_argument("--title")
-    c.add_argument("--allocations", type=int, nargs="*", help="specific allocation ids (default: all unclaimed)")
-    c.set_defaults(fn=cmd_claim)
+    un = sub.add_parser("unallocate", help="delete an allocation (blocked once its claim is submitted)")
+    un.add_argument("allocation_id", type=int)
+    un.set_defaults(fn=cmd_unallocate)
+
+    cl = sub.add_parser("claims", help="list claims")
+    cl.add_argument("--party")
+    cl.add_argument("--status", choices=["draft", "submitted", "paid", "rejected"])
+    cl.set_defaults(fn=cmd_claims)
+
+    c = sub.add_parser("claim", help="claim lifecycle: new, show, submit, paid, reject, reopen, add, remove")
+    cs = c.add_subparsers(dest="claim_cmd", required=True)
+
+    x = cs.add_parser("new", help="open a draft claim from unclaimed allocations")
+    x.add_argument("party")
+    x.add_argument("--title")
+    x.add_argument("--allocations", type=int, nargs="*", help="specific allocation ids (default: all unclaimed)")
+    x.set_defaults(fn=cmd_claim_new)
+
+    x = cs.add_parser("show", help="claim details and its allocations")
+    x.add_argument("claim_id", type=int)
+    x.set_defaults(fn=cmd_claim_show)
+
+    x = cs.add_parser("submit", help="draft -> submitted")
+    x.add_argument("claim_id", type=int)
+    x.add_argument("--date", help="YYYY-MM-DD (default today)")
+    x.add_argument("--document", help="FilingCabinet ref / path of the submission package")
+    x.set_defaults(fn=cmd_claim_submit)
+
+    x = cs.add_parser("paid", help="submitted -> paid")
+    x.add_argument("claim_id", type=int)
+    x.add_argument("--amount", type=float, help="default: claim total, or the linked transaction amount")
+    x.add_argument("--date", help="YYYY-MM-DD (default today)")
+    x.add_argument("--transaction", type=int, help="id of the reimbursing deposit in transactions")
+    x.set_defaults(fn=cmd_claim_paid)
+
+    x = cs.add_parser("reject", help="submitted -> rejected")
+    x.add_argument("claim_id", type=int)
+    x.add_argument("--notes")
+    x.set_defaults(fn=cmd_claim_reject)
+
+    x = cs.add_parser("reopen", help="submitted/rejected -> draft")
+    x.add_argument("claim_id", type=int)
+    x.set_defaults(fn=cmd_claim_reopen)
+
+    x = cs.add_parser("add", help="attach unclaimed allocations to a draft claim")
+    x.add_argument("claim_id", type=int)
+    x.add_argument("allocations", type=int, nargs="+")
+    x.set_defaults(fn=cmd_claim_add)
+
+    x = cs.add_parser("remove", help="detach allocations from a draft claim")
+    x.add_argument("claim_id", type=int)
+    x.add_argument("allocations", type=int, nargs="+")
+    x.set_defaults(fn=cmd_claim_remove)
 
     i = sub.add_parser("import-amazon", help="import an Amazon order-history CSV export")
     i.add_argument("csv")

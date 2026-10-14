@@ -31,8 +31,14 @@ Views: `v_item_allocations` (allocated / unallocated per item), `v_claim_totals`
 
 1. Import orders (`pt import-amazon`) or add them by hand (`pt add`).
 2. `pt show <order>` and `pt allocate <item> Mom|HSA [amount]` for anything reimbursable.
-3. `pt unclaimed` shows what you are owed; `pt claim Mom` batches it into a draft claim.
-4. Mark the claim submitted/paid and link the reimbursing transaction (CLI for this is next).
+3. `pt unclaimed` shows what you are owed; `pt claim new Mom` batches it into a draft claim.
+   Adjust with `pt claim add|remove <claim> <alloc ids>` while it is a draft.
+4. `pt claim submit <id> [--document REF]`, then `pt claim paid <id> [--transaction ID]`
+   or `pt claim reject <id>`. `pt claim reopen <id>` returns a submitted/rejected claim
+   to draft. Paid is terminal. `pt claims [--party X] [--status S]` lists them.
+
+Transitions: `draft -> submitted -> paid | rejected`, `submitted | rejected -> draft`.
+Allocations on a non-draft claim are locked (no remove, no delete).
 
 ## Migrations
 

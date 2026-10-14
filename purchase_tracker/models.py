@@ -213,3 +213,132 @@ def create_claim(conn: sqlite3.Connection, party: str, title: str | None = None,
             (c.id, p.id, *allocation_ids),
         )
     return c
+
+
+# --- claim lifecycle ---------------------------------------------------------
+
+# status -> statuses it may move to
+CLAIM_TRANSITIONS = {
+    "draft": {"submitted"},
+    "submitted": {"paid", "rejected", "draft"},
+    "rejected": {"draft"},
+    "paid": set(),
+}
+
+
+def _today() -> str:
+    from datetime import date
+    return date.today().isoformat()
+
+
+def get_claim(conn: sqlite3.Connection, claim_id: int) -> Claim:
+    row = conn.execute("SELECT * FROM claims WHERE id = ?", (claim_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no claim with id {claim_id}")
+    return Claim.from_row(row)
+
+
+def list_claims(conn: sqlite3.Connection, party: str | None = None,
+                status: str | None = None) -> list[sqlite3.Row]:
+    """Rows from v_claim_totals joined with dates and paid_amount."""
+    sql = ("SELECT v.*, c.submitted_at, c.paid_at, c.paid_amount, c.created_at"
+           " FROM v_claim_totals v JOIN claims c ON c.id = v.claim_id")
+    where, args = [], []
+    if party:
+        where.append("v.party = ? COLLATE NOCASE"); args.append(party)
+    if status:
+        where.append("v.status = ?"); args.append(status)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    return conn.execute(sql + " ORDER BY v.claim_id", args).fetchall()
+
+
+def claim_allocations(conn: sqlite3.Connection, claim_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT a.id AS allocation_id, a.amount, a.notes, i.id AS item_id, i.name AS item,"
+        " o.id AS order_id, o.vendor, o.order_ref, o.order_date"
+        " FROM allocations a JOIN items i ON i.id = a.item_id JOIN orders o ON o.id = i.order_id"
+        " WHERE a.claim_id = ? ORDER BY o.order_date, a.id", (claim_id,)
+    ).fetchall()
+
+
+def _transition(conn: sqlite3.Connection, claim_id: int, to: str, **cols) -> Claim:
+    c = get_claim(conn, claim_id)
+    if to not in CLAIM_TRANSITIONS[c.status]:
+        raise ValueError(f"claim {claim_id} is {c.status}; cannot move to {to}")
+    cols["status"] = to
+    sets = ", ".join(f"{k} = ?" for k in cols)
+    conn.execute(f"UPDATE claims SET {sets} WHERE id = ?", (*cols.values(), claim_id))
+    return get_claim(conn, claim_id)
+
+
+def submit_claim(conn: sqlite3.Connection, claim_id: int, date: str | None = None,
+                 document_ref: str | None = None) -> Claim:
+    c = get_claim(conn, claim_id)
+    if not claim_allocations(conn, claim_id):
+        raise ValueError(f"claim {claim_id} has no allocations")
+    cols = {"submitted_at": date or _today()}
+    if document_ref:
+        cols["document_ref"] = document_ref
+    return _transition(conn, claim_id, "submitted", **cols)
+
+
+def pay_claim(conn: sqlite3.Connection, claim_id: int, amount: float | None = None,
+              date: str | None = None, transaction_id: int | None = None) -> Claim:
+    """Mark paid. amount defaults to the claim total; transaction_id links the deposit."""
+    total = conn.execute("SELECT total FROM v_claim_totals WHERE claim_id = ?", (claim_id,)).fetchone()["total"]
+    if transaction_id is not None:
+        t = conn.execute("SELECT amount FROM transactions WHERE id = ?", (transaction_id,)).fetchone()
+        if t is None:
+            raise ValueError(f"no transaction with id {transaction_id}")
+        if amount is None:
+            amount = abs(t["amount"])
+    cols = {"paid_at": date or _today(), "paid_amount": round(amount if amount is not None else total, 2),
+            "paid_transaction_id": transaction_id}
+    return _transition(conn, claim_id, "paid", **cols)
+
+
+def reject_claim(conn: sqlite3.Connection, claim_id: int, notes: str | None = None) -> Claim:
+    cols = {}
+    if notes:
+        old = get_claim(conn, claim_id).notes
+        cols["notes"] = f"{old}\n{notes}" if old else notes
+    return _transition(conn, claim_id, "rejected", **cols)
+
+
+def reopen_claim(conn: sqlite3.Connection, claim_id: int) -> Claim:
+    """submitted/rejected -> draft, clearing submission details."""
+    return _transition(conn, claim_id, "draft", submitted_at=None, paid_at=None, paid_amount=None)
+
+
+def claim_add_allocations(conn: sqlite3.Connection, claim_id: int, allocation_ids: list[int]) -> int:
+    c = get_claim(conn, claim_id)
+    if c.status != "draft":
+        raise ValueError(f"claim {claim_id} is {c.status}; only draft claims can be edited")
+    marks = ",".join("?" for _ in allocation_ids)
+    cur = conn.execute(
+        f"UPDATE allocations SET claim_id = ? WHERE claim_id IS NULL AND party_id = ? AND id IN ({marks})",
+        (claim_id, c.party_id, *allocation_ids))
+    return cur.rowcount
+
+
+def claim_remove_allocations(conn: sqlite3.Connection, claim_id: int, allocation_ids: list[int]) -> int:
+    c = get_claim(conn, claim_id)
+    if c.status != "draft":
+        raise ValueError(f"claim {claim_id} is {c.status}; only draft claims can be edited")
+    marks = ",".join("?" for _ in allocation_ids)
+    cur = conn.execute(
+        f"UPDATE allocations SET claim_id = NULL WHERE claim_id = ? AND id IN ({marks})",
+        (claim_id, *allocation_ids))
+    return cur.rowcount
+
+
+def delete_allocation(conn: sqlite3.Connection, allocation_id: int) -> None:
+    row = conn.execute(
+        "SELECT a.claim_id, c.status FROM allocations a LEFT JOIN claims c ON c.id = a.claim_id WHERE a.id = ?",
+        (allocation_id,)).fetchone()
+    if row is None:
+        raise ValueError(f"no allocation with id {allocation_id}")
+    if row["claim_id"] is not None and row["status"] != "draft":
+        raise ValueError(f"allocation {allocation_id} is on {row['status']} claim {row['claim_id']}")
+    conn.execute("DELETE FROM allocations WHERE id = ?", (allocation_id,))

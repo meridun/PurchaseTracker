@@ -35,7 +35,10 @@ pt show 1                  # items + allocations for order 1
 pt allocate 3 HSA          # whole remainder of item 3 is HSA-reimbursable
 pt allocate 4 Mom 12.50    # part of item 4 is Mom's
 pt unclaimed               # what you are owed, not yet claimed
-pt claim Mom --title "Oct 2026"
+pt claim new Mom --title "Oct 2026"
+pt claim submit 1 --document "FilingCabinet:claims/2026-10-mom.pdf"
+pt claim paid 1 --transaction 42   # link the deposit once statements are imported
+pt claims
 pytest
 ```
 
@@ -62,7 +65,6 @@ tests/
 
 ## Roadmap ideas
 
-- Claim lifecycle commands (submit, mark paid, link reimbursing transaction)
 - Statement importers (card, bank, HSA) and order-to-charge reconciliation
 - Claim package export (summary + receipts as one PDF) for HSA submission
 - More order importers (Walmart, Target, email receipts)

@@ -108,8 +108,82 @@ def test_cli_roundtrip(tmp_path, capsys):
               "--item", "Batteries", "--price", "4.5", "--qty", "2"])
     cli.main(["--data-dir", d, "allocate", "1", "mom"])
     cli.main(["--data-dir", d, "unclaimed"])
-    cli.main(["--data-dir", d, "claim", "Mom", "--title", "test"])
+    cli.main(["--data-dir", d, "claim", "new", "Mom", "--title", "test"])
+    cli.main(["--data-dir", d, "claim", "submit", "1", "--date", "2026-02-10"])
+    cli.main(["--data-dir", d, "claim", "paid", "1", "--date", "2026-02-20"])
+    cli.main(["--data-dir", d, "claim", "show", "1"])
     cli.main(["--data-dir", d, "show", "1"])
     out = capsys.readouterr().out
     assert "Batteries" in out and "9.00" in out
-    assert "claim 1 for Mom: 1 allocations, 9.00 (draft)" in out
+    assert "paid       2026-02-20" in out and "paid 9.00" in out
+    with pytest.raises(SystemExit):           # paid is terminal
+        cli.main(["--data-dir", d, "claim", "reopen", "1"])
+
+
+def test_claim_lifecycle(conn):
+    from purchase_tracker.models import (
+        claim_add_allocations, claim_remove_allocations, delete_allocation, get_claim,
+        list_claims, pay_claim, reject_claim, reopen_claim, submit_claim,
+    )
+    oid, _ = Order(vendor="cvs", order_ref="c1", order_date="2026-03-01", total=50).get_or_insert(conn)
+    i1 = Item(order_id=oid, name="Rx", line_key="a", total=30).insert(conn)
+    i2 = Item(order_id=oid, name="Bandages", line_key="b", total=20).insert(conn)
+    a1 = allocate(conn, i1, "HSA")
+    a2 = allocate(conn, i2, "HSA")
+
+    c = create_claim(conn, "HSA", allocation_ids=[a1.id])
+    assert claim_add_allocations(conn, c.id, [a2.id]) == 1
+    assert claim_remove_allocations(conn, c.id, [a2.id]) == 1
+    assert claim_add_allocations(conn, c.id, [a2.id]) == 1
+    assert claim_add_allocations(conn, c.id, [a2.id]) == 0   # already attached
+
+    with pytest.raises(ValueError):            # can't pay a draft
+        pay_claim(conn, c.id)
+    submit_claim(conn, c.id, date="2026-03-10", document_ref="fc:123")
+    c = get_claim(conn, c.id)
+    assert (c.status, c.submitted_at, c.document_ref) == ("submitted", "2026-03-10", "fc:123")
+    with pytest.raises(ValueError):            # locked once submitted
+        claim_remove_allocations(conn, c.id, [a2.id])
+    with pytest.raises(ValueError):
+        delete_allocation(conn, a1.id)
+
+    reject_claim(conn, c.id, notes="missing receipt")
+    assert get_claim(conn, c.id).status == "rejected"
+    reopen_claim(conn, c.id)
+    c = get_claim(conn, c.id)
+    assert (c.status, c.submitted_at) == ("draft", None)
+
+    submit_claim(conn, c.id)
+    pay_claim(conn, c.id, date="2026-04-01")
+    c = get_claim(conn, c.id)
+    assert (c.status, c.paid_amount, c.paid_at) == ("paid", 50.0, "2026-04-01")
+    with pytest.raises(ValueError):            # paid is terminal
+        reopen_claim(conn, c.id)
+    assert [r["status"] for r in list_claims(conn, "hsa")] == ["paid"]
+    assert unclaimed(conn) == []
+
+
+def test_pay_claim_links_transaction(conn):
+    from purchase_tracker.models import Account, Transaction, get_claim, pay_claim, submit_claim
+    oid, _ = Order(vendor="x", order_ref="1", order_date="2026-01-01").get_or_insert(conn)
+    iid = Item(order_id=oid, name="Thing", line_key="t", total=25).insert(conn)
+    allocate(conn, iid, "Mom")
+    c = create_claim(conn, "Mom")
+    submit_claim(conn, c.id)
+    acct = Account(name="My checking", party_id=1, kind="checking").insert(conn)
+    tid = Transaction(account_id=acct, posted_date="2026-01-15", amount=25.0, external_id="dep1",
+                      description="Zelle from Mom").insert(conn)
+    pay_claim(conn, c.id, transaction_id=tid)
+    c = get_claim(conn, c.id)
+    assert (c.paid_amount, c.paid_transaction_id) == (25.0, tid)
+
+
+def test_pay_claim_rejects_unknown_transaction(conn):
+    from purchase_tracker.models import pay_claim, submit_claim
+    oid, _ = Order(vendor="x", order_ref="2", order_date="2026-01-01").get_or_insert(conn)
+    iid = Item(order_id=oid, name="Thing", line_key="t", total=5).insert(conn)
+    allocate(conn, iid, "Mom")
+    c = create_claim(conn, "Mom")
+    submit_claim(conn, c.id)
+    with pytest.raises(ValueError):
+        pay_claim(conn, c.id, transaction_id=999)
